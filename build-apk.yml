@@ -2,9 +2,9 @@ name: Build Snake 26S APK
 
 on:
   workflow_dispatch:
-
-permissions:
-  contents: read
+  push:
+    branches:
+      - main
 
 jobs:
   build:
@@ -14,43 +14,57 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Rebuild original ZIP from split parts
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Rebuild source ZIP
         shell: bash
         run: |
           set -e
 
-          mkdir -p snake-project
-
           if ls snake26s.part-* >/dev/null 2>&1; then
-            echo "Split ZIP parts found."
+            echo "Found split source files."
             cat snake26s.part-* > snake26s.zip
-            unzip -q snake26s.zip -d snake-project
+          elif [ -f snake26s.zip ]; then
+            echo "Found snake26s.zip."
           else
-            echo "No split parts found. Looking for ZIP file..."
-            ZIP_FILE=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
-
-            if [ -z "$ZIP_FILE" ]; then
-              echo "ERROR: No ZIP or split ZIP files found."
-              exit 1
-            fi
-
-            unzip -q "$ZIP_FILE" -d snake-project
-          fi
-
-          echo "Searching for App.tsx..."
-          PROJECT_DIR=$(dirname "$(find snake-project -type f -name "App.tsx" -print -quit)")
-
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: App.tsx was not found."
-            find snake-project -maxdepth 4 -type f | head -100
+            echo "ERROR: Source ZIP or split ZIP parts were not found."
             exit 1
           fi
 
-          echo "Project directory: $PROJECT_DIR"
+          mkdir -p snake-project
+          unzip -q snake26s.zip -d snake-project
+
+          echo "Extracted files:"
+          find snake-project -maxdepth 3 -type f | head -100
+
+      - name: Find project directory
+        shell: bash
+        run: |
+          set -e
+
+          PROJECT_DIR="$(dirname "$(find snake-project -name App.tsx -print -quit)")"
+
+          if [ -z "$PROJECT_DIR" ] || [ ! -f "$PROJECT_DIR/App.tsx" ]; then
+            echo "ERROR: App.tsx was not found."
+            exit 1
+          fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Project directory: $PROJECT_DIR"
 
-      - name: Prepare standalone React project
+      - name: Prepare Android web project
         shell: bash
         run: |
           set -e
@@ -59,7 +73,7 @@ jobs:
 
           mkdir -p public
 
-          if [ -d "assets" ]; then
+          if [ -d assets ]; then
             rm -rf public/assets
             mv assets public/assets
           fi
@@ -84,8 +98,6 @@ jobs:
             },
             "devDependencies": {
               "@capacitor/cli": "^6.2.1",
-              "@types/react": "^18.3.12",
-              "@types/react-dom": "^18.3.1",
               "@vitejs/plugin-react": "^4.3.4",
               "autoprefixer": "^10.4.20",
               "postcss": "^8.4.49",
@@ -129,6 +141,15 @@ jobs:
           }
           EOF
 
+          cat > postcss.config.js <<'EOF'
+          export default {
+            plugins: {
+              tailwindcss: {},
+              autoprefixer: {}
+            }
+          };
+          EOF
+
           cat > tailwind.config.js <<'EOF'
           export default {
             content: [
@@ -141,15 +162,6 @@ jobs:
               extend: {}
             },
             plugins: []
-          };
-          EOF
-
-          cat > postcss.config.js <<'EOF'
-          export default {
-            plugins: {
-              tailwindcss: {},
-              autoprefixer: {}
-            }
           };
           EOF
 
@@ -179,19 +191,19 @@ jobs:
           cat > index.html <<'EOF'
           <!doctype html>
           <html lang="en">
-            <head>
-              <meta charset="UTF-8" />
-              <meta
-                name="viewport"
-                content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no"
-              />
-              <meta name="theme-color" content="#020617" />
-              <title>Snake 26S</title>
-            </head>
-            <body>
-              <div id="root"></div>
-              <script type="module" src="./index.tsx"></script>
-            </body>
+          <head>
+            <meta charset="UTF-8" />
+            <meta
+              name="viewport"
+              content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no"
+            />
+            <meta name="theme-color" content="#020617" />
+            <title>Snake 26S</title>
+          </head>
+          <body>
+            <div id="root"></div>
+            <script type="module" src="./index.tsx"></script>
+          </body>
           </html>
           EOF
 
@@ -202,6 +214,7 @@ jobs:
             appId: 'com.apkdorid.snake26s',
             appName: 'Snake 26S',
             webDir: 'dist',
+            bundledWebRuntime: false,
             android: {
               allowMixedContent: true
             }
@@ -209,6 +222,14 @@ jobs:
 
           export default config;
           EOF
+
+      - name: Replace Playground SDK
+        shell: bash
+        run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+          mkdir -p utils
 
           cat > utils/usePlayground.ts <<'EOF'
           import { useCallback, useMemo, useRef, useState } from 'react';
@@ -259,61 +280,54 @@ jobs:
           ] {
             const [isLoading, setIsLoading] = useState(false);
 
-            const callRpc = useCallback(
-              async (_payload: RequestType) => {
-                setIsLoading(false);
-                return undefined as ResponseType;
-              },
-              []
-            );
+            const callRpc = useCallback(async (_payload: RequestType) => {
+              setIsLoading(false);
+              return undefined as ResponseType;
+            }, []);
 
             return [callRpc, isLoading];
           }
           EOF
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
       - name: Install dependencies
-        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
         run: |
+          set -e
+          cd "$PROJECT_DIR"
           npm install --no-audit --no-fund
 
-      - name: Build web game
-        working-directory: ${{ env.PROJECT_DIR }}
+      - name: Build web app
+        shell: bash
         run: |
+          set -e
+          cd "$PROJECT_DIR"
           npm run build
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Create Android project
-        working-directory: ${{ env.PROJECT_DIR }}
+      - name: Add Android platform
+        shell: bash
         run: |
+          set -e
+          cd "$PROJECT_DIR"
           npx cap add android
 
-      - name: Sync web project to Android
-        working-directory: ${{ env.PROJECT_DIR }}
+      - name: Sync Capacitor
+        shell: bash
         run: |
+          set -e
+          cd "$PROJECT_DIR"
           npx cap sync android
 
       - name: Build APK
-        working-directory: ${{ env.PROJECT_DIR }}/android
+        shell: bash
         run: |
+          set -e
+          cd "$PROJECT_DIR/android"
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Snake-26S-APK
+          name: Snake26S-APK
           path: ${{ env.PROJECT_DIR }}/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
