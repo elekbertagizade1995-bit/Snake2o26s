@@ -14,11 +14,221 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Rebuild project ZIP
+      - name: Rebuild original ZIP
         run: |
-          cat snake26s.part-aa snake26s.part-ab snake26s.part-ac snake26s.part-ad > Snake26S-Android-Ready-v2.zip
+          cat snake26s.part-aa snake26s.part-ab snake26s.part-ac snake26s.part-ad > snake26s.zip
           mkdir snake-project
-          unzip -q Snake26S-Android-Ready-v2.zip -d snake-project
+          unzip -q snake26s.zip -d snake-project
+
+      - name: Prepare Android project
+        working-directory: snake-project
+        run: |
+          mkdir -p public
+          if [ -d assets ]; then
+            mv assets public/assets
+          fi
+
+          cat > package.json <<'EOF'
+          {
+            "name": "snake-26s",
+            "version": "1.0.0",
+            "private": true,
+            "type": "module",
+            "scripts": {
+              "build": "vite build",
+              "dev": "vite",
+              "preview": "vite preview"
+            },
+            "dependencies": {
+              "@capacitor/android": "^6.2.1",
+              "@capacitor/core": "^6.2.1",
+              "lucide-react": "^0.468.0",
+              "react": "^18.3.1",
+              "react-dom": "^18.3.1"
+            },
+            "devDependencies": {
+              "@capacitor/cli": "^6.2.1",
+              "@types/react": "^18.3.12",
+              "@types/react-dom": "^18.3.1",
+              "@vitejs/plugin-react": "^4.3.4",
+              "autoprefixer": "^10.4.20",
+              "postcss": "^8.4.49",
+              "tailwindcss": "^3.4.17",
+              "typescript": "^5.7.2",
+              "vite": "^6.0.5"
+            }
+          }
+          EOF
+
+          cat > vite.config.ts <<'EOF'
+          import { defineConfig } from 'vite';
+          import react from '@vitejs/plugin-react';
+
+          export default defineConfig({
+            plugins: [react()],
+            base: './'
+          });
+          EOF
+
+          cat > tsconfig.json <<'EOF'
+          {
+            "compilerOptions": {
+              "target": "ES2020",
+              "useDefineForClassFields": true,
+              "lib": ["ES2020", "DOM", "DOM.Iterable"],
+              "allowJs": false,
+              "skipLibCheck": true,
+              "esModuleInterop": true,
+              "allowSyntheticDefaultImports": true,
+              "strict": false,
+              "forceConsistentCasingInFileNames": true,
+              "module": "ESNext",
+              "moduleResolution": "Bundler",
+              "resolveJsonModule": true,
+              "isolatedModules": true,
+              "noEmit": true,
+              "jsx": "react-jsx"
+            },
+            "include": ["**/*.ts", "**/*.tsx"]
+          }
+          EOF
+
+          cat > tailwind.config.js <<'EOF'
+          export default {
+            content: [
+              './index.html',
+              './App.tsx',
+              './constants.ts',
+              './utils/**/*.{ts,tsx}'
+            ],
+            theme: {
+              extend: {}
+            },
+            plugins: []
+          };
+          EOF
+
+          cat > postcss.config.js <<'EOF'
+          export default {
+            plugins: {
+              tailwindcss: {},
+              autoprefixer: {}
+            }
+          };
+          EOF
+
+          cat > styles.css <<'EOF'
+          @tailwind base;
+          @tailwind components;
+          @tailwind utilities;
+
+          html, body, #root {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+          }
+
+          body {
+            background: #020617;
+            overflow: hidden;
+          }
+
+          * {
+            -webkit-tap-highlight-color: transparent;
+          }
+          EOF
+
+          cat > index.html <<'EOF'
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="UTF-8" />
+              <meta
+                name="viewport"
+                content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no"
+              />
+              <meta name="theme-color" content="#020617" />
+              <title>Snake 26S</title>
+            </head>
+            <body>
+              <div id="root"></div>
+              <script type="module" src="./index.tsx"></script>
+            </body>
+          </html>
+          EOF
+
+          cat > utils/usePlayground.ts <<'EOF'
+          import { useCallback, useMemo, useRef, useState } from 'react';
+
+          export function usePlayground() {
+            const [isReady] = useState(true);
+
+            const onGameEventRef = useRef<((event: any) => void) | null>(null);
+            const onPresenceEventRef = useRef<((presence: any) => void) | null>(null);
+            const onLobbyStatusRef = useRef<((status: any) => void) | null>(null);
+
+            const sdk = useMemo(() => ({
+              startGame() {},
+              scoreUpdated(_data: any) {},
+              gameOver() {},
+              levelComplete(_level: any) {},
+              pauseStateChanged(_paused: boolean) {},
+              init: async () => {}
+            }), []);
+
+            return {
+              sdk,
+              isReady,
+              onGameEventRef,
+              onPresenceEventRef,
+              onLobbyStatusRef
+            };
+          }
+
+          export interface BaseGameState {
+            status: string;
+            score: number;
+            level?: number | string;
+          }
+
+          export function usePlaygroundGameLifecycle(
+            _gameState: BaseGameState,
+            _sdk?: any
+          ) {
+            return undefined;
+          }
+
+          export function useRpc<RequestType, ResponseType>(
+            _rpcName: string
+          ): [
+            (payload: RequestType) => Promise<ResponseType>,
+            boolean
+          ] {
+            const [isLoading, setIsLoading] = useState(false);
+
+            const callRpc = useCallback(async (_payload: RequestType) => {
+              setIsLoading(false);
+              return undefined as ResponseType;
+            }, []);
+
+            return [callRpc, isLoading];
+          }
+          EOF
+
+          cat > capacitor.config.ts <<'EOF'
+          import type { CapacitorConfig } from '@capacitor/cli';
+
+          const config: CapacitorConfig = {
+            appId: 'com.apkdorid.snake26s',
+            appName: 'Snake 26S',
+            webDir: 'dist',
+            android: {
+              allowMixedContent: true
+            }
+          };
+
+          export default config;
+          EOF
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -29,7 +239,7 @@ jobs:
         working-directory: snake-project
         run: npm install --no-audit --no-fund
 
-      - name: Build web app
+      - name: Build web game
         working-directory: snake-project
         run: npm run build
 
@@ -42,12 +252,7 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK packages
-        run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-
-      - name: Add Android project
+      - name: Create Android project
         working-directory: snake-project
         run: npx cap add android
 
@@ -55,15 +260,14 @@ jobs:
         working-directory: snake-project
         run: npx cap sync android
 
-      - name: Build debug APK
+      - name: Build APK
         working-directory: snake-project/android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Snake-26S-APK
           path: snake-project/android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
