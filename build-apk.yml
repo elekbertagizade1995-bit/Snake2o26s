@@ -14,17 +14,53 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Rebuild original ZIP
+      - name: Rebuild original ZIP from split parts
+        shell: bash
         run: |
-          cat snake26s.part-aa snake26s.part-ab snake26s.part-ac snake26s.part-ad > snake26s.zip
-          mkdir snake-project
-          unzip -q snake26s.zip -d snake-project
+          set -e
 
-      - name: Prepare Android project
-        working-directory: snake-project
+          mkdir -p snake-project
+
+          if ls snake26s.part-* >/dev/null 2>&1; then
+            echo "Split ZIP parts found."
+            cat snake26s.part-* > snake26s.zip
+            unzip -q snake26s.zip -d snake-project
+          else
+            echo "No split parts found. Looking for ZIP file..."
+            ZIP_FILE=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
+
+            if [ -z "$ZIP_FILE" ]; then
+              echo "ERROR: No ZIP or split ZIP files found."
+              exit 1
+            fi
+
+            unzip -q "$ZIP_FILE" -d snake-project
+          fi
+
+          echo "Searching for App.tsx..."
+          PROJECT_DIR=$(dirname "$(find snake-project -type f -name "App.tsx" -print -quit)")
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: App.tsx was not found."
+            find snake-project -maxdepth 4 -type f | head -100
+            exit 1
+          fi
+
+          echo "Project directory: $PROJECT_DIR"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Prepare standalone React project
+        shell: bash
         run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
           mkdir -p public
-          if [ -d assets ]; then
+
+          if [ -d "assets" ]; then
+            rm -rf public/assets
             mv assets public/assets
           fi
 
@@ -35,8 +71,8 @@ jobs:
             "private": true,
             "type": "module",
             "scripts": {
-              "build": "vite build",
               "dev": "vite",
+              "build": "vite build",
               "preview": "vite preview"
             },
             "dependencies": {
@@ -122,7 +158,9 @@ jobs:
           @tailwind components;
           @tailwind utilities;
 
-          html, body, #root {
+          html,
+          body,
+          #root {
             width: 100%;
             height: 100%;
             margin: 0;
@@ -155,6 +193,21 @@ jobs:
               <script type="module" src="./index.tsx"></script>
             </body>
           </html>
+          EOF
+
+          cat > capacitor.config.ts <<'EOF'
+          import type { CapacitorConfig } from '@capacitor/cli';
+
+          const config: CapacitorConfig = {
+            appId: 'com.apkdorid.snake26s',
+            appName: 'Snake 26S',
+            webDir: 'dist',
+            android: {
+              allowMixedContent: true
+            }
+          };
+
+          export default config;
           EOF
 
           cat > utils/usePlayground.ts <<'EOF'
@@ -206,42 +259,32 @@ jobs:
           ] {
             const [isLoading, setIsLoading] = useState(false);
 
-            const callRpc = useCallback(async (_payload: RequestType) => {
-              setIsLoading(false);
-              return undefined as ResponseType;
-            }, []);
+            const callRpc = useCallback(
+              async (_payload: RequestType) => {
+                setIsLoading(false);
+                return undefined as ResponseType;
+              },
+              []
+            );
 
             return [callRpc, isLoading];
           }
           EOF
 
-          cat > capacitor.config.ts <<'EOF'
-          import type { CapacitorConfig } from '@capacitor/cli';
-
-          const config: CapacitorConfig = {
-            appId: 'com.apkdorid.snake26s',
-            appName: 'Snake 26S',
-            webDir: 'dist',
-            android: {
-              allowMixedContent: true
-            }
-          };
-
-          export default config;
-          EOF
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install dependencies
-        working-directory: snake-project
-        run: npm install --no-audit --no-fund
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          npm install --no-audit --no-fund
 
       - name: Build web game
-        working-directory: snake-project
-        run: npm run build
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          npm run build
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -253,21 +296,24 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Create Android project
-        working-directory: snake-project
-        run: npx cap add android
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          npx cap add android
 
-      - name: Sync Capacitor
-        working-directory: snake-project
-        run: npx cap sync android
+      - name: Sync web project to Android
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          npx cap sync android
 
       - name: Build APK
-        working-directory: snake-project/android
+        working-directory: ${{ env.PROJECT_DIR }}/android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Snake-26S-APK
-          path: snake-project/android/app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ env.PROJECT_DIR }}/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
