@@ -1,1 +1,80 @@
+name: Build Snake 26S APK
 
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Rebuild and verify project ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s snake26s.part-aa
+          test -s snake26s.part-ab
+          test -s snake26s.part-ac
+          test -s snake26s.part-ad
+          cat snake26s.part-aa snake26s.part-ab snake26s.part-ac snake26s.part-ad > snake26s.zip
+          unzip -tq snake26s.zip
+          mkdir snake-project
+          unzip -q snake26s.zip -d snake-project
+          test -s snake-project/package.json
+          test -s snake-project/capacitor.config.ts
+          test -s snake-project/index.html
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: snake-project
+        run: npm install --no-audit --no-fund
+
+      - name: Build web game
+        working-directory: snake-project
+        run: npm run build
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Add Android project
+        working-directory: snake-project
+        run: npx cap add android
+
+      - name: Sync Capacitor
+        working-directory: snake-project
+        run: npx cap sync android
+
+      - name: Build debug APK
+        working-directory: snake-project/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Snake-26S-APK
+          path: snake-project/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
